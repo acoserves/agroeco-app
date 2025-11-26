@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-import plotly.graph_objects as go
 
 # --------------------------------------------------
 # 0. Paramètres généraux
@@ -167,65 +166,7 @@ def build_excel_bytes(tous_les_resultats: pd.DataFrame,
 
 
 # --------------------------------------------------
-# 2. Fonctions pour les graphiques
-# --------------------------------------------------
-
-def radar_par_pays(resume_par_pays: pd.DataFrame, country: str):
-    """Construit un radar des scores moyens par dimension pour un pays donné."""
-    dfc = resume_par_pays[resume_par_pays["country"] == country].copy()
-    if dfc.empty:
-        return None
-
-    # On garde l’ordre des dimensions tel que dans les métadonnées
-    dfc = dfc.sort_values("dimension_code")
-
-    categories = dfc["dimension_label"].tolist()
-    values = dfc["dimension_mean"].tolist()
-
-    # Fermer le polygone (revenir au premier point)
-    categories += categories[:1]
-    values += values[:1]
-
-    fig = go.Figure(
-        data=go.Scatterpolar(
-            r=values,
-            theta=categories,
-            fill="toself",
-            name=country
-        )
-    )
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 5]
-            )
-        ),
-        showlegend=False,
-        margin=dict(l=40, r=40, t=40, b=40),
-        title=f"Profil global de transition – {country}"
-    )
-    return fig
-
-
-def bar_par_categorie(resume_par_categorie: pd.DataFrame, country: str):
-    """Construit un tableau croisé dimension × catégorie d'acteurs pour un pays (utile pour barres)."""
-    dfc = resume_par_categorie[resume_par_categorie["country"] == country].copy()
-    if dfc.empty:
-        return None
-
-    # Tableau croisé : lignes = catégories, colonnes = dimensions
-    pivot = dfc.pivot(
-        index="actor_category",
-        columns="dimension_label",
-        values="dimension_mean"
-    ).sort_index()
-
-    return pivot
-
-
-# --------------------------------------------------
-# 3. Interface Streamlit
+# 2. Interface Streamlit
 # --------------------------------------------------
 
 st.set_page_config(
@@ -245,7 +186,7 @@ st.markdown(
     1. Téléverser la base brute (Excel) téléchargée depuis KoboCollect.  
     2. Vérifier l’aperçu.  
     3. Lancer l’analyse.  
-    4. Visualiser les tableaux **et les graphiques**.  
+    4. Visualiser les tableaux et quelques graphiques.  
     5. Télécharger le fichier de résultats (Excel).
     """
 )
@@ -297,26 +238,34 @@ if uploaded_file is not None:
         st.dataframe(tous_les_resultats)
 
         # --------------------------
-        # GRAPHIQUES – PROFILS PAR PAYS
+        # GRAPHIQUES – PAR PAYS
         # --------------------------
-        st.markdown("## Graphiques – Profils globaux de transition (radars)")
+        st.markdown("## Graphiques – Dimensions par pays")
 
-        countries = resume_par_pays["country"].dropna().unique().tolist()
-        for country in countries:
-            fig = radar_par_pays(resume_par_pays, country)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
+        # Tableau croisé: lignes = dimensions, colonnes = pays
+        pivot_pays = resume_par_pays.pivot(
+            index="dimension_label",
+            columns="country",
+            values="dimension_mean"
+        )
+        st.bar_chart(pivot_pays)
 
         # --------------------------
-        # GRAPHIQUES – PAR CATÉGORIE D’ACTEURS
+        # GRAPHIQUES – PAR CATÉGORIE ET PAR PAYS
         # --------------------------
         st.markdown("## Graphiques – Dimensions par catégorie d'acteurs et par pays")
 
+        countries = resume_par_pays["country"].dropna().unique().tolist()
         for country in countries:
             st.markdown(f"### {country}")
-            pivot = bar_par_categorie(resume_par_categorie, country)
-            if pivot is not None:
-                st.bar_chart(pivot)
+            dfc = resume_par_categorie[resume_par_categorie["country"] == country]
+            if not dfc.empty:
+                pivot_cat = dfc.pivot(
+                    index="actor_category",
+                    columns="dimension_label",
+                    values="dimension_mean"
+                ).sort_index()
+                st.bar_chart(pivot_cat)
 
         # Export Excel
         excel_bytes = build_excel_bytes(
