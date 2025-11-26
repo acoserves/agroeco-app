@@ -29,7 +29,6 @@ def mean_excluding_zero(x: pd.Series) -> float:
     x = x.replace(0, np.nan)
     return x.mean()
 
-
 def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     """
     Applique la logique AGRO ECO :
@@ -38,8 +37,8 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     - agrégations
     Retourne :
     - tous_les_resultats
-    - resume_par_categorie
-    - resume_par_pays
+    - resume_par_categorie (toutes dimensions listées)
+    - resume_par_pays (toutes dimensions listées)
     """
 
     # Vérifier que les colonnes de contexte sont là
@@ -76,6 +75,9 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     ]
     long_df = long_df.merge(meta_subset, on="var_name", how="left")
 
+    # Liste de toutes les dimensions présentes dans les métadonnées
+    dim_universe = meta_df[["dimension_code", "dimension_label"]].drop_duplicates()
+
     # --------------------------------------------------
     # Table 1 – Tous les résultats par indicateur
     # --------------------------------------------------
@@ -108,7 +110,6 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         .groupby(
             ["country",
              "actor_category",
-             "dimension_label",
              "dimension_code"],
             dropna=False
         )["mean_score"]
@@ -116,7 +117,29 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         .reset_index(name="dimension_mean")
     )
 
-    resume_par_categorie = resume_par_categorie.sort_values(
+    # Compléter avec toutes les dimensions possibles
+    countries = long_df["country"].dropna().unique()
+    cats = long_df["actor_category"].dropna().unique()
+    full_idx = pd.MultiIndex.from_product(
+        [countries, cats, dim_universe["dimension_code"]],
+        names=["country", "actor_category", "dimension_code"]
+    )
+
+    resume_par_categorie = resume_par_categorie.set_index(
+        ["country", "actor_category", "dimension_code"]
+    )
+    resume_par_categorie = resume_par_categorie.reindex(full_idx).reset_index()
+
+    # Rattacher les labels de dimensions
+    resume_par_categorie = resume_par_categorie.merge(
+        dim_universe,
+        on="dimension_code",
+        how="left"
+    )
+
+    resume_par_categorie = resume_par_categorie[
+        ["country", "actor_category", "dimension_label", "dimension_code", "dimension_mean"]
+    ].sort_values(
         by=["country", "actor_category", "dimension_code"]
     )
 
@@ -127,7 +150,6 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         tous_les_resultats
         .groupby(
             ["country",
-             "dimension_label",
              "dimension_code"],
             dropna=False
         )["mean_score"]
@@ -135,11 +157,28 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         .reset_index(name="dimension_mean")
     )
 
-    resume_par_pays = resume_par_pays.sort_values(
+    full_idx2 = pd.MultiIndex.from_product(
+        [countries, dim_universe["dimension_code"]],
+        names=["country", "dimension_code"]
+    )
+
+    resume_par_pays = resume_par_pays.set_index(["country", "dimension_code"])
+    resume_par_pays = resume_par_pays.reindex(full_idx2).reset_index()
+
+    resume_par_pays = resume_par_pays.merge(
+        dim_universe,
+        on="dimension_code",
+        how="left"
+    )
+
+    resume_par_pays = resume_par_pays[
+        ["country", "dimension_label", "dimension_code", "dimension_mean"]
+    ].sort_values(
         by=["country", "dimension_code"]
     )
 
     return tous_les_resultats, resume_par_categorie, resume_par_pays
+
 
 
 def build_excel_bytes(tous_les_resultats: pd.DataFrame,
