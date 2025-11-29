@@ -15,8 +15,10 @@ META_PATH = "AGROECO_Metadata_Questions.xlsx"
 # Colonnes de contexte attendues dans la base brute Kobo
 ID_COLS = ["country", "actor_category", "respondent_index"]
 
-# Ordre « logique » des dimensions pour les radars
-DIM_ORDER = ["env", "eco", "pol", "terr", "temp", "collab"]
+# Ordre « logique » des dimensions PRINCIPALES (sans collaboration)
+DIM_MAIN = ["env", "eco", "pol", "terr", "temp"]
+# Liste complète (si besoin ailleurs)
+DIM_ALL = ["env", "eco", "pol", "terr", "temp", "collab"]
 
 
 # --------------------------------------------------
@@ -175,27 +177,41 @@ def build_excel_bytes(tous_les_resultats: pd.DataFrame,
 # 2. Fonctions pour les graphiques (type Excel + complémentaires)
 # --------------------------------------------------
 
-def order_dimensions(df: pd.DataFrame) -> pd.DataFrame:
-    """Ordonne les dimensions selon DIM_ORDER."""
+def order_dimensions(df: pd.DataFrame, main_only: bool = True) -> pd.DataFrame:
+    """
+    Ordonne les dimensions.
+    - si main_only=True : uniquement les 5 dimensions principales (sans collaboration)
+    - sinon : on garde l'ordre DIM_ALL
+    """
     if "dimension_code" not in df.columns:
         return df
     df = df.copy()
-    cat = pd.Categorical(df["dimension_code"], categories=DIM_ORDER, ordered=True)
+    if main_only:
+        cats = DIM_MAIN
+    else:
+        cats = DIM_ALL
+    cat = pd.Categorical(df["dimension_code"], categories=cats, ordered=True)
     df["dimension_code"] = cat
     df = df.sort_values("dimension_code")
     return df
 
 
 def radar_par_pays(resume_par_pays: pd.DataFrame, country: str):
-    """Radar des scores moyens par dimension pour un pays (profil global de transition)."""
-    dfc = resume_par_pays[resume_par_pays["country"] == country].copy()
+    """
+    Radar des scores moyens par dimension pour un pays (profil global de transition).
+    Ne prend en compte que les 5 dimensions principales (sans collaboration).
+    """
+    dfc = resume_par_pays[
+        (resume_par_pays["country"] == country)
+        & (resume_par_pays["dimension_code"].isin(DIM_MAIN))
+    ].copy()
     if dfc.empty:
         return None
 
-    dfc = order_dimensions(dfc)
+    dfc = order_dimensions(dfc, main_only=True)
 
     labels = dfc["dimension_label"].tolist()
-    values = dfc["dimension_mean"].tolist()
+    values = dfc["dimension_mean"].fillna(0).tolist()
 
     # fermer le polygone
     labels += labels[:1]
@@ -226,13 +242,16 @@ def radar_par_pays(resume_par_pays: pd.DataFrame, country: str):
 def radar_par_categorie(resume_par_categorie: pd.DataFrame, country: str):
     """
     Radar multi-traces par catégorie d'acteurs pour un pays.
-    Permet de comparer les perceptions.
+    Ne prend en compte que les 5 dimensions principales (sans collaboration).
     """
-    dfc = resume_par_categorie[resume_par_categorie["country"] == country].copy()
+    dfc = resume_par_categorie[
+        (resume_par_categorie["country"] == country)
+        & (resume_par_categorie["dimension_code"].isin(DIM_MAIN))
+    ].copy()
     if dfc.empty:
         return None
 
-    dfc = order_dimensions(dfc)
+    dfc = order_dimensions(dfc, main_only=True)
 
     categories = dfc["actor_category"].dropna().unique().tolist()
     dim_labels = (
@@ -244,9 +263,8 @@ def radar_par_categorie(resume_par_categorie: pd.DataFrame, country: str):
     fig = go.Figure()
     for actor in categories:
         dfa = dfc[dfc["actor_category"] == actor]
-        dfa = order_dimensions(dfa)
-        vals = dfa["dimension_mean"].tolist()
-        # fermer le polygone
+        dfa = order_dimensions(dfa, main_only=True)
+        vals = dfa["dimension_mean"].fillna(0).tolist()
         t = dim_labels + dim_labels[:1]
         r = vals + vals[:1]
         fig.add_trace(
@@ -273,8 +291,12 @@ def radar_par_categorie(resume_par_categorie: pd.DataFrame, country: str):
 
 
 def bar_dimensions_par_pays(resume_par_pays: pd.DataFrame):
-    """Barres comparatives par dimension et par pays (graphique complémentaire)."""
-    df = order_dimensions(resume_par_pays)
+    """
+    Barres comparatives par dimension et par pays,
+    uniquement pour les 5 dimensions principales (sans collaboration).
+    """
+    df = resume_par_pays[resume_par_pays["dimension_code"].isin(DIM_MAIN)].copy()
+    df = order_dimensions(df, main_only=True)
     fig = px.bar(
         df,
         x="dimension_label",
@@ -293,11 +315,17 @@ def bar_dimensions_par_pays(resume_par_pays: pd.DataFrame):
 
 
 def bar_dimensions_par_categorie(resume_par_categorie: pd.DataFrame, country: str):
-    """Barres comparatives par dimension et catégorie d'acteurs, pour un pays."""
-    dfc = resume_par_categorie[resume_par_categorie["country"] == country].copy()
+    """
+    Barres comparatives par dimension et catégorie d'acteurs, pour un pays,
+    uniquement pour les 5 dimensions principales (sans collaboration).
+    """
+    dfc = resume_par_categorie[
+        (resume_par_categorie["country"] == country)
+        & (resume_par_categorie["dimension_code"].isin(DIM_MAIN))
+    ].copy()
     if dfc.empty:
         return None
-    dfc = order_dimensions(dfc)
+    dfc = order_dimensions(dfc, main_only=True)
     fig = px.bar(
         dfc,
         x="dimension_label",
@@ -349,6 +377,52 @@ def scatter_env_eco(resume_par_categorie: pd.DataFrame):
     fig.update_xaxes(range=[0, 5])
     fig.update_yaxes(range=[0, 5])
     return fig
+
+
+def tableau_synthese_dimensions(resume_par_categorie: pd.DataFrame, country: str = None):
+    """
+    Construit un tableau de type « Résumé des résultats » :
+    lignes = dimensions principales (sans collaboration)
+    colonnes = catégories d'acteurs
+    - si country est None : tous pays confondus
+    - sinon : filtré sur un pays
+    """
+    df = resume_par_categorie.copy()
+    if country is not None:
+        df = df[df["country"] == country]
+
+    df = df[df["dimension_code"].isin(DIM_MAIN)].copy()
+
+    if df.empty:
+        return None
+
+    # Moyenne sur les pays si nécessaire
+    df = (
+        df
+        .groupby(["dimension_label", "dimension_code", "actor_category"], dropna=False)["dimension_mean"]
+        .mean()
+        .reset_index()
+    )
+
+    # Pivot : dimensions en lignes, catégories en colonnes
+    table = df.pivot_table(
+        index=["dimension_label", "dimension_code"],
+        columns="actor_category",
+        values="dimension_mean"
+    )
+
+    # Ordonner les dimensions selon DIM_MAIN
+    ordered_index = []
+    for code in DIM_MAIN:
+        mask = (table.index.get_level_values("dimension_code") == code)
+        if mask.any():
+            for idx in table.index[mask]:
+                ordered_index.append(idx)
+
+    if ordered_index:
+        table = table.loc[ordered_index]
+
+    return table
 
 
 # --------------------------------------------------
@@ -411,7 +485,7 @@ if uploaded_file is not None:
         st.success("Analyse terminée.")
 
         # --------------------------
-        # TABLEAUX
+        # TABLEAUX BRUTS
         # --------------------------
         st.subheader("Résumé par dimension et par pays")
         st.dataframe(resume_par_pays)
@@ -423,12 +497,28 @@ if uploaded_file is not None:
         st.dataframe(tous_les_resultats)
 
         # --------------------------
+        # TABLEAUX TYPE « RÉSUMÉ DES RÉSULTATS »
+        # --------------------------
+        st.markdown("## Tableaux de synthèse – type « Résumé des résultats »")
+
+        table_global = tableau_synthese_dimensions(resume_par_categorie, country=None)
+        if table_global is not None:
+            st.markdown("### Tableau global (tous pays confondus)")
+            st.dataframe(table_global)
+
+        countries = resume_par_pays["country"].dropna().unique().tolist()
+        for country in countries:
+            table_country = tableau_synthese_dimensions(resume_par_categorie, country=country)
+            if table_country is not None:
+                st.markdown(f"### {country}")
+                st.dataframe(table_country)
+
+        # --------------------------
         # GRAPHIQUES – type Excel
         # --------------------------
 
         st.markdown("## Graphiques – Profils globaux de transition (radars)")
 
-        countries = resume_par_pays["country"].dropna().unique().tolist()
         for country in countries:
             fig_radar = radar_par_pays(resume_par_pays, country)
             if fig_radar is not None:
@@ -472,4 +562,5 @@ if uploaded_file is not None:
         )
 else:
     st.info("Veuillez téléverser un fichier Excel brut exporté de KoboCollect.")
+
 
