@@ -16,7 +16,6 @@ META_PATH = "AGROECO_Metadata_Questions.xlsx"
 ID_COLS = ["country", "actor_category", "respondent_index"]
 
 # Ordre « logique » des dimensions PRINCIPALES (sans collaboration)
-# Codes tels que définis dans AGROECO_Metadata_Questions.xlsx
 DIM_MAIN = ["env", "eco", "pol", "terr", "temp"]
 # Liste complète (si besoin ailleurs)
 DIM_ALL = ["env", "eco", "pol", "terr", "temp", "collab"]
@@ -39,9 +38,47 @@ def mean_excluding_zero(x: pd.Series) -> float:
     return x.mean()
 
 
+def ensure_context_columns(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    S'assure que les colonnes de contexte 'country', 'actor_category'
+    et 'respondent_index' existent dans la base brute.
+
+    - country : si absent, on essaie de l'inférer à partir de 'territory'
+                (par ex. 'Burkina Faso - Territoire_1' → 'Burkina Faso').
+                Sinon, on met 'Pays unique'.
+    - respondent_index : si absent, on numérote les répondants de 1 à N.
+    - actor_category : si absente, on met 'Catégorie inconnue'.
+    """
+    df = raw_df.copy()
+
+    # country
+    if "country" not in df.columns:
+        if "territory" in df.columns:
+            countries = (
+                df["territory"]
+                .astype(str)
+                .str.extract(r"^(.*?)(?:\s*-\s*|$)")[0]
+                .str.strip()
+            )
+            df["country"] = countries.replace("", "Pays unique")
+        else:
+            df["country"] = "Pays unique"
+
+    # respondent_index
+    if "respondent_index" not in df.columns:
+        df["respondent_index"] = np.arange(1, len(df) + 1)
+
+    # actor_category
+    if "actor_category" not in df.columns:
+        df["actor_category"] = "Catégorie inconnue"
+
+    return df
+
+
 def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     """
     Applique la logique de l’outil AGRO ECO :
+    - harmonisation des colonnes de contexte
     - passage en long
     - jointure avec les métadonnées
     - agrégations
@@ -51,7 +88,10 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     - resume_par_pays
     """
 
-    # Vérifier que les colonnes de contexte sont là
+    # Harmoniser / créer les colonnes de contexte
+    raw_df = ensure_context_columns(raw_df)
+
+    # Vérifier que les colonnes de contexte sont bien là
     for col in ID_COLS:
         if col not in raw_df.columns:
             raise ValueError(f"Colonne de contexte manquante dans la base brute : {col}")
@@ -59,8 +99,7 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     # Toutes les variables d’indicateurs définies dans les métadonnées
     indicator_vars = meta_df["var_name"].dropna().unique().tolist()
 
-    # 🔴 IMPORTANT : garantir que toutes les variables d’indicateurs existent dans la base
-    # Si une variable n’est pas présente dans la base brute, on crée une colonne vide (NaN)
+    # Garantir que toutes les colonnes d'indicateurs existent
     for v in indicator_vars:
         if v not in raw_df.columns:
             raw_df[v] = np.nan
@@ -397,7 +436,6 @@ def tableau_synthese_dimensions(resume_par_categorie: pd.DataFrame, country: str
     if df.empty:
         return None
 
-    # Moyenne sur les pays si nécessaire
     df = (
         df
         .groupby(["dimension_label", "dimension_code", "actor_category"], dropna=False)["dimension_mean"]
@@ -405,14 +443,12 @@ def tableau_synthese_dimensions(resume_par_categorie: pd.DataFrame, country: str
         .reset_index()
     )
 
-    # Pivot : dimensions en lignes, catégories en colonnes
     table = df.pivot_table(
         index=["dimension_label", "dimension_code"],
         columns="actor_category",
         values="dimension_mean"
     )
 
-    # Ordonner les dimensions selon DIM_MAIN
     ordered_index = []
     for code in DIM_MAIN:
         mask = (table.index.get_level_values("dimension_code") == code)
@@ -517,7 +553,6 @@ if uploaded_file is not None:
         # --------------------------
         # GRAPHIQUES – type Excel
         # --------------------------
-
         st.markdown("## Graphiques – Profils globaux de transition (radars)")
 
         for country in countries:
@@ -535,7 +570,6 @@ if uploaded_file is not None:
         # --------------------------
         # GRAPHIQUES – complémentaires
         # --------------------------
-
         st.markdown("## Graphiques complémentaires")
 
         fig_bar_pays = bar_dimensions_par_pays(resume_par_pays)
