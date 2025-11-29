@@ -16,6 +16,7 @@ META_PATH = "AGROECO_Metadata_Questions.xlsx"
 ID_COLS = ["country", "actor_category", "respondent_index"]
 
 # Ordre « logique » des dimensions PRINCIPALES (sans collaboration)
+# Codes tels que définis dans AGROECO_Metadata_Questions.xlsx
 DIM_MAIN = ["env", "eco", "pol", "terr", "temp"]
 # Liste complète (si besoin ailleurs)
 DIM_ALL = ["env", "eco", "pol", "terr", "temp", "collab"]
@@ -55,16 +56,16 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         if col not in raw_df.columns:
             raise ValueError(f"Colonne de contexte manquante dans la base brute : {col}")
 
-    # Liste des variables d’indicateurs issues des métadonnées
+    # Toutes les variables d’indicateurs définies dans les métadonnées
     indicator_vars = meta_df["var_name"].dropna().unique().tolist()
 
-    # Garder seulement celles qui existent effectivement dans la base
-    indicator_vars = [v for v in indicator_vars if v in raw_df.columns]
+    # 🔴 IMPORTANT : garantir que toutes les variables d’indicateurs existent dans la base
+    # Si une variable n’est pas présente dans la base brute, on crée une colonne vide (NaN)
+    for v in indicator_vars:
+        if v not in raw_df.columns:
+            raw_df[v] = np.nan
 
-    if len(indicator_vars) == 0:
-        raise ValueError("Aucune variable d’indicateur trouvée dans la base brute.")
-
-    # Conversion en numérique
+    # Conversion en numérique pour toutes les colonnes d’indicateurs
     raw_df[indicator_vars] = raw_df[indicator_vars].apply(
         pd.to_numeric, errors="coerce"
     )
