@@ -2,15 +2,21 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
+import plotly.graph_objects as go
+import plotly.express as px
 
 # --------------------------------------------------
 # 0. Paramètres généraux
 # --------------------------------------------------
 
-META_PATH = "AGROECO_Metadata_Questions.xlsx"  # fichier de métadonnées à placer à côté de app.py
+# Fichier de métadonnées (même dossier que app.py)
+META_PATH = "AGROECO_Metadata_Questions.xlsx"
 
 # Colonnes de contexte attendues dans la base brute Kobo
 ID_COLS = ["country", "actor_category", "respondent_index"]
+
+# Ordre « logique » des dimensions pour les radars
+DIM_ORDER = ["env", "eco", "pol", "terr", "temp", "collab"]
 
 
 # --------------------------------------------------
@@ -19,7 +25,7 @@ ID_COLS = ["country", "actor_category", "respondent_index"]
 
 @st.cache_data
 def load_metadata(meta_path: str) -> pd.DataFrame:
-    """Charge le fichier de métadonnées des questions."""
+    """Charge le fichier de métadonnées des questions AGRO ECO."""
     meta_df = pd.read_excel(meta_path, sheet_name="questions")
     return meta_df
 
@@ -29,16 +35,17 @@ def mean_excluding_zero(x: pd.Series) -> float:
     x = x.replace(0, np.nan)
     return x.mean()
 
+
 def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     """
-    Applique la logique AGRO ECO :
+    Applique la logique de l’outil AGRO ECO :
     - passage en long
     - jointure avec les métadonnées
     - agrégations
     Retourne :
     - tous_les_resultats
-    - resume_par_categorie (toutes dimensions listées)
-    - resume_par_pays (toutes dimensions listées)
+    - resume_par_categorie
+    - resume_par_pays
     """
 
     # Vérifier que les colonnes de contexte sont là
@@ -75,9 +82,6 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
     ]
     long_df = long_df.merge(meta_subset, on="var_name", how="left")
 
-    # Liste de toutes les dimensions présentes dans les métadonnées
-    dim_universe = meta_df[["dimension_code", "dimension_label"]].drop_duplicates()
-
     # --------------------------------------------------
     # Table 1 – Tous les résultats par indicateur
     # --------------------------------------------------
@@ -110,6 +114,7 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         .groupby(
             ["country",
              "actor_category",
+             "dimension_label",
              "dimension_code"],
             dropna=False
         )["mean_score"]
@@ -117,29 +122,7 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         .reset_index(name="dimension_mean")
     )
 
-    # Compléter avec toutes les dimensions possibles
-    countries = long_df["country"].dropna().unique()
-    cats = long_df["actor_category"].dropna().unique()
-    full_idx = pd.MultiIndex.from_product(
-        [countries, cats, dim_universe["dimension_code"]],
-        names=["country", "actor_category", "dimension_code"]
-    )
-
-    resume_par_categorie = resume_par_categorie.set_index(
-        ["country", "actor_category", "dimension_code"]
-    )
-    resume_par_categorie = resume_par_categorie.reindex(full_idx).reset_index()
-
-    # Rattacher les labels de dimensions
-    resume_par_categorie = resume_par_categorie.merge(
-        dim_universe,
-        on="dimension_code",
-        how="left"
-    )
-
-    resume_par_categorie = resume_par_categorie[
-        ["country", "actor_category", "dimension_label", "dimension_code", "dimension_mean"]
-    ].sort_values(
+    resume_par_categorie = resume_par_categorie.sort_values(
         by=["country", "actor_category", "dimension_code"]
     )
 
@@ -150,6 +133,7 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         tous_les_resultats
         .groupby(
             ["country",
+             "dimension_label",
              "dimension_code"],
             dropna=False
         )["mean_score"]
@@ -157,28 +141,11 @@ def run_analysis(raw_df: pd.DataFrame, meta_df: pd.DataFrame):
         .reset_index(name="dimension_mean")
     )
 
-    full_idx2 = pd.MultiIndex.from_product(
-        [countries, dim_universe["dimension_code"]],
-        names=["country", "dimension_code"]
-    )
-
-    resume_par_pays = resume_par_pays.set_index(["country", "dimension_code"])
-    resume_par_pays = resume_par_pays.reindex(full_idx2).reset_index()
-
-    resume_par_pays = resume_par_pays.merge(
-        dim_universe,
-        on="dimension_code",
-        how="left"
-    )
-
-    resume_par_pays = resume_par_pays[
-        ["country", "dimension_label", "dimension_code", "dimension_mean"]
-    ].sort_values(
+    resume_par_pays = resume_par_pays.sort_values(
         by=["country", "dimension_code"]
     )
 
     return tous_les_resultats, resume_par_categorie, resume_par_pays
-
 
 
 def build_excel_bytes(tous_les_resultats: pd.DataFrame,
@@ -205,27 +172,207 @@ def build_excel_bytes(tous_les_resultats: pd.DataFrame,
 
 
 # --------------------------------------------------
-# 2. Interface Streamlit
+# 2. Fonctions pour les graphiques (type Excel + complémentaires)
+# --------------------------------------------------
+
+def order_dimensions(df: pd.DataFrame) -> pd.DataFrame:
+    """Ordonne les dimensions selon DIM_ORDER."""
+    if "dimension_code" not in df.columns:
+        return df
+    df = df.copy()
+    cat = pd.Categorical(df["dimension_code"], categories=DIM_ORDER, ordered=True)
+    df["dimension_code"] = cat
+    df = df.sort_values("dimension_code")
+    return df
+
+
+def radar_par_pays(resume_par_pays: pd.DataFrame, country: str):
+    """Radar des scores moyens par dimension pour un pays (profil global de transition)."""
+    dfc = resume_par_pays[resume_par_pays["country"] == country].copy()
+    if dfc.empty:
+        return None
+
+    dfc = order_dimensions(dfc)
+
+    labels = dfc["dimension_label"].tolist()
+    values = dfc["dimension_mean"].tolist()
+
+    # fermer le polygone
+    labels += labels[:1]
+    values += values[:1]
+
+    fig = go.Figure(
+        data=go.Scatterpolar(
+            r=values,
+            theta=labels,
+            fill="toself",
+            name=country
+        )
+    )
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 5]
+            )
+        ),
+        showlegend=False,
+        margin=dict(l=40, r=40, t=40, b=40),
+        title=f"Profil global de transition – {country}"
+    )
+    return fig
+
+
+def radar_par_categorie(resume_par_categorie: pd.DataFrame, country: str):
+    """
+    Radar multi-traces par catégorie d'acteurs pour un pays.
+    Permet de comparer les perceptions.
+    """
+    dfc = resume_par_categorie[resume_par_categorie["country"] == country].copy()
+    if dfc.empty:
+        return None
+
+    dfc = order_dimensions(dfc)
+
+    categories = dfc["actor_category"].dropna().unique().tolist()
+    dim_labels = (
+        dfc[["dimension_code", "dimension_label"]]
+        .drop_duplicates()
+        .sort_values("dimension_code")
+    )["dimension_label"].tolist()
+
+    fig = go.Figure()
+    for actor in categories:
+        dfa = dfc[dfc["actor_category"] == actor]
+        dfa = order_dimensions(dfa)
+        vals = dfa["dimension_mean"].tolist()
+        # fermer le polygone
+        t = dim_labels + dim_labels[:1]
+        r = vals + vals[:1]
+        fig.add_trace(
+            go.Scatterpolar(
+                r=r,
+                theta=t,
+                fill="toself",
+                name=str(actor)
+            )
+        )
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 5]
+            )
+        ),
+        showlegend=True,
+        margin=dict(l=40, r=40, t=40, b=40),
+        title=f"Profils par catégorie d'acteurs – {country}"
+    )
+    return fig
+
+
+def bar_dimensions_par_pays(resume_par_pays: pd.DataFrame):
+    """Barres comparatives par dimension et par pays (graphique complémentaire)."""
+    df = order_dimensions(resume_par_pays)
+    fig = px.bar(
+        df,
+        x="dimension_label",
+        y="dimension_mean",
+        color="country",
+        barmode="group",
+        labels={
+            "dimension_label": "Dimension",
+            "dimension_mean": "Score moyen (0–5)",
+            "country": "Pays"
+        },
+        title="Comparaison des dimensions de la transition par pays"
+    )
+    fig.update_yaxes(range=[0, 5])
+    return fig
+
+
+def bar_dimensions_par_categorie(resume_par_categorie: pd.DataFrame, country: str):
+    """Barres comparatives par dimension et catégorie d'acteurs, pour un pays."""
+    dfc = resume_par_categorie[resume_par_categorie["country"] == country].copy()
+    if dfc.empty:
+        return None
+    dfc = order_dimensions(dfc)
+    fig = px.bar(
+        dfc,
+        x="dimension_label",
+        y="dimension_mean",
+        color="actor_category",
+        barmode="group",
+        labels={
+            "dimension_label": "Dimension",
+            "dimension_mean": "Score moyen (0–5)",
+            "actor_category": "Catégorie d'acteurs"
+        },
+        title=f"Dimensions de la transition par catégorie d'acteurs – {country}"
+    )
+    fig.update_yaxes(range=[0, 5])
+    return fig
+
+
+def scatter_env_eco(resume_par_categorie: pd.DataFrame):
+    """
+    Graphique complémentaire : relation entre dimension environnementale et économique
+    (par pays et catégorie d'acteurs).
+    """
+    df = resume_par_categorie.copy()
+    df = df[df["dimension_code"].isin(["env", "eco"])]
+
+    pivot = df.pivot_table(
+        index=["country", "actor_category"],
+        columns="dimension_code",
+        values="dimension_mean"
+    ).reset_index()
+
+    if "env" not in pivot.columns or "eco" not in pivot.columns:
+        return None
+
+    fig = px.scatter(
+        pivot,
+        x="env",
+        y="eco",
+        color="country",
+        symbol="actor_category",
+        labels={
+            "env": "Score environnemental moyen",
+            "eco": "Score économique moyen",
+            "country": "Pays",
+            "actor_category": "Catégorie d'acteurs"
+        },
+        title="Relations entre performances environnementales et économiques"
+    )
+    fig.update_xaxes(range=[0, 5])
+    fig.update_yaxes(range=[0, 5])
+    return fig
+
+
+# --------------------------------------------------
+# 3. Interface Streamlit
 # --------------------------------------------------
 
 st.set_page_config(
-    page_title="AGRO ECO / QTAAE – Analyse automatique",
+    page_title="AGRO ECO – Analyse automatique",
     layout="wide"
 )
 
-st.title("AGRO ECO / QTAAE – Analyse automatique des données Kobo")
+st.title("AGRO ECO – Analyse automatique des données Kobo")
 
 st.markdown(
     """
     Cet outil permet d’analyser automatiquement une **base brute Kobo** 
-    issue du questionnaire AGRO ECO / QTAAE, et de produire des résultats 
+    issue du questionnaire AGRO ECO, et de produire des résultats 
     identiques (moyennes par indicateur et par dimension) à la version Excel de l’outil.
     
     **Étapes :**
     1. Téléverser la base brute (Excel) téléchargée depuis KoboCollect.  
     2. Vérifier l’aperçu.  
     3. Lancer l’analyse.  
-    4. Visualiser les tableaux et quelques graphiques.  
+    4. Visualiser les tableaux et les graphiques.  
     5. Télécharger le fichier de résultats (Excel).
     """
 )
@@ -252,7 +399,6 @@ if uploaded_file is not None:
     st.subheader("Aperçu de la base brute")
     st.dataframe(raw_df.head())
 
-    # Bouton pour lancer l'analyse
     if st.button("Lancer l'analyse AGRO ECO"):
         try:
             tous_les_resultats, resume_par_categorie, resume_par_pays = run_analysis(
@@ -277,34 +423,41 @@ if uploaded_file is not None:
         st.dataframe(tous_les_resultats)
 
         # --------------------------
-        # GRAPHIQUES – PAR PAYS
+        # GRAPHIQUES – type Excel
         # --------------------------
-        st.markdown("## Graphiques – Dimensions par pays")
 
-        # Tableau croisé: lignes = dimensions, colonnes = pays
-        pivot_pays = resume_par_pays.pivot(
-            index="dimension_label",
-            columns="country",
-            values="dimension_mean"
-        )
-        st.bar_chart(pivot_pays)
-
-        # --------------------------
-        # GRAPHIQUES – PAR CATÉGORIE ET PAR PAYS
-        # --------------------------
-        st.markdown("## Graphiques – Dimensions par catégorie d'acteurs et par pays")
+        st.markdown("## Graphiques – Profils globaux de transition (radars)")
 
         countries = resume_par_pays["country"].dropna().unique().tolist()
         for country in countries:
-            st.markdown(f"### {country}")
-            dfc = resume_par_categorie[resume_par_categorie["country"] == country]
-            if not dfc.empty:
-                pivot_cat = dfc.pivot(
-                    index="actor_category",
-                    columns="dimension_label",
-                    values="dimension_mean"
-                ).sort_index()
-                st.bar_chart(pivot_cat)
+            fig_radar = radar_par_pays(resume_par_pays, country)
+            if fig_radar is not None:
+                st.plotly_chart(fig_radar, use_container_width=True)
+
+        st.markdown("## Graphiques – Profils par catégorie d'acteurs (radars)")
+
+        for country in countries:
+            fig_rcat = radar_par_categorie(resume_par_categorie, country)
+            if fig_rcat is not None:
+                st.plotly_chart(fig_rcat, use_container_width=True)
+
+        # --------------------------
+        # GRAPHIQUES – complémentaires
+        # --------------------------
+
+        st.markdown("## Graphiques complémentaires")
+
+        fig_bar_pays = bar_dimensions_par_pays(resume_par_pays)
+        st.plotly_chart(fig_bar_pays, use_container_width=True)
+
+        for country in countries:
+            fig_bar_cat = bar_dimensions_par_categorie(resume_par_categorie, country)
+            if fig_bar_cat is not None:
+                st.plotly_chart(fig_bar_cat, use_container_width=True)
+
+        fig_scatter = scatter_env_eco(resume_par_categorie)
+        if fig_scatter is not None:
+            st.plotly_chart(fig_scatter, use_container_width=True)
 
         # Export Excel
         excel_bytes = build_excel_bytes(
@@ -319,3 +472,4 @@ if uploaded_file is not None:
         )
 else:
     st.info("Veuillez téléverser un fichier Excel brut exporté de KoboCollect.")
+
