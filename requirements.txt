@@ -3,6 +3,8 @@ pandas
 numpy
 openpyxl
 xlsxwriter
+plotly
+
 
 
 
